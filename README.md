@@ -3,7 +3,7 @@
 A Windows tray icon and small desktop panel showing Claude plan usage: the 5-hour session limit,
 the weekly limits and when each resets. Same numbers as Settings > Usage in the Claude app.
 
-![tray icon colours](docs/tray-states.png)
+![The panel: session at 88% with a near-limit warning, weekly at 56%, reset times below each bar](docs/panel.png)
 
 ## How it gets the numbers
 
