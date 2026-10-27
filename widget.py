@@ -90,6 +90,13 @@ def bar_image(width, height, percent, severity):
     return img.resize((width, height), Image.LANCZOS)
 
 
+def update(widget, **options):
+    """configure() only the options that changed, so an unchanged widget is never redrawn."""
+    changed = {k: v for k, v in options.items() if str(widget.cget(k)) != str(v)}
+    if changed:
+        widget.configure(**changed)
+
+
 def load_settings():
     settings = {"x": None, "y": None, "visible": True, "topmost": True}
     try:
@@ -149,7 +156,8 @@ class App:
         self.wake = threading.Event()
         self.data = None
         self.error = None
-        self.images = []
+        self.layout = None
+        self.placed = None
         self.drag = None
 
         self.root = tk.Tk()
@@ -275,69 +283,99 @@ class App:
         self.icon.update_menu()
 
     def render(self):
-        self.build()
+        # Rebuilding every Tk widget on each 30 s tick made the panel flicker, so widgets are only
+        # rebuilt when the layout changes; text, colours and bars are updated in place.
+        layout = self.layout_key()
+        if layout != self.layout:
+            self.layout = layout
+            self.build()
+        self.fill()
         self.fit()
+
+    def layout_key(self):
+        """What decides which widgets exist: the limit rows, the message line, the footer."""
+        limits = tuple(l.label for l in self.data.limits) if self.data else ()
+        message = not self.data or bool(self.error and self.error.kind == "login")
+        return limits, message, bool(self.data and self.data.breakdown)
+
+    def label(self, parent, size, fg, bold=False, **options):
+        return tk.Label(parent, font=(FONT, size, "bold") if bold else (FONT, size), fg=fg, bg=SURFACE, **options)
 
     def build(self):
         for child in self.body.winfo_children():
             child.destroy()
-        self.images = []
+        limits, message, footer = self.layout
         width = self.px(PANEL_WIDTH)
         tk.Frame(self.body, bg=SURFACE, width=width, height=0).pack()  # fixed width in every state
 
         header = tk.Frame(self.body, bg=SURFACE)
         header.pack(fill="x", pady=(0, self.px(6)))
-        tk.Label(header, text="Claude usage", font=(FONT, 9, "bold"), fg=INK_2, bg=SURFACE).pack(side="left")
-        close = tk.Label(header, text="✕", font=(FONT, 9), fg=MUTED, bg=SURFACE, cursor="hand2")
+        self.label(header, 9, INK_2, bold=True, text="Claude usage").pack(side="left")
+        close = self.label(header, 9, MUTED, text="✕", cursor="hand2")
         close.pack(side="right")
         close.bind("<Button-1>", lambda e: self.set_visible(False))
-        if self.error:
-            note = tk.Frame(header, bg=SURFACE)
-            note.pack(side="right", padx=(0, self.px(8)))
-            tk.Label(note, text="⚠", font=(FONT, 8), fg=FILL["warning"], bg=SURFACE).pack(side="left")
-            tk.Label(note, text=ERROR_SHORT.get(self.error.kind, "Error"), font=(FONT, 8),
-                     fg=INK_2, bg=SURFACE).pack(side="left")
-        elif self.data:
-            tk.Label(header, text=f"updated {usage.format_age(self.data.fetched_at)}", font=(FONT, 8),
-                     fg=MUTED, bg=SURFACE).pack(side="right", padx=(0, self.px(8)))
+        self.note = self.label(header, 8, MUTED)
+        self.note.pack(side="right", padx=(0, self.px(8)))
+        self.note_icon = self.label(header, 8, FILL["warning"])
+        self.note_icon.pack(side="right")
 
-        if self.error and (self.error.kind == "login" or not self.data):
-            tk.Label(self.body, text=str(self.error), font=(FONT, 9), fg=INK_2, bg=SURFACE, justify="left",
-                     wraplength=width, anchor="w").pack(fill="x", pady=(0, self.px(6)))
-        if not self.data:
-            if not self.error:
-                tk.Label(self.body, text="Loading…", font=(FONT, 9), fg=MUTED, bg=SURFACE,
-                         anchor="w").pack(fill="x")
-            return
+        self.message = None
+        if message:
+            self.message = self.label(self.body, 9, MUTED, justify="left", wraplength=width, anchor="w")
+            self.message.pack(fill="x", pady=(0, self.px(6)))
 
-        for limit in self.data.limits:
-            severity = "stale" if self.error else limit.severity
+        self.rows = []
+        for name in limits:
             block = tk.Frame(self.body, bg=SURFACE)
             block.pack(fill="x", pady=(self.px(4), self.px(6)))
             top = tk.Frame(block, bg=SURFACE)
             top.pack(fill="x")
-            tk.Label(top, text=limit.label, font=(FONT, 10), fg=INK, bg=SURFACE).pack(side="left")
-            tk.Label(top, text=f"{round(limit.percent)}%", font=(FONT, 10, "bold"), fg=INK,
-                     bg=SURFACE).pack(side="right")
-
-            image = ImageTk.PhotoImage(bar_image(width, self.px(BAR_HEIGHT), limit.percent, severity))
-            self.images.append(image)
-            tk.Label(block, image=image, bg=SURFACE, borderwidth=0).pack(fill="x", pady=(self.px(3), self.px(3)))
-
+            self.label(top, 10, INK, text=name).pack(side="left")
+            row = {"percent": self.label(top, 10, INK, bold=True), "bar_key": None}
+            row["percent"].pack(side="right")
+            row["bar"] = tk.Label(block, bg=SURFACE, borderwidth=0)
+            row["bar"].pack(fill="x", pady=(self.px(3), self.px(3)))
             bottom = tk.Frame(block, bg=SURFACE)
             bottom.pack(fill="x")
-            tk.Label(bottom, text=usage.format_reset(limit.resets_at), font=(FONT, 8), fg=MUTED,
-                     bg=SURFACE).pack(side="left")
-            label = status_text(limit)
-            if label and not self.error:
-                tk.Label(bottom, text=label, font=(FONT, 8), fg=INK_2, bg=SURFACE).pack(side="right")
-                tk.Label(bottom, text="⚠", font=(FONT, 8), fg=FILL[limit.severity],
-                         bg=SURFACE).pack(side="right")
+            row["reset"] = self.label(bottom, 8, MUTED)
+            row["reset"].pack(side="left")
+            row["status"] = self.label(bottom, 8, INK_2)
+            row["status"].pack(side="right")
+            row["status_icon"] = self.label(bottom, 8, MUTED)
+            row["status_icon"].pack(side="right")
+            self.rows.append(row)
 
-        if self.data.breakdown:
+        self.footer = None
+        if footer:
+            self.footer = self.label(self.body, 8, MUTED, wraplength=width, justify="left", anchor="w")
+            self.footer.pack(fill="x", pady=(self.px(2), 0))
+
+    def fill(self):
+        if self.error:
+            update(self.note_icon, text="⚠")
+            update(self.note, text=ERROR_SHORT.get(self.error.kind, "Error"), fg=INK_2)
+        else:
+            update(self.note_icon, text="")
+            update(self.note, text=f"updated {usage.format_age(self.data.fetched_at)}" if self.data else "", fg=MUTED)
+        if self.message:
+            update(self.message, text=str(self.error) if self.error else "Loading…", fg=INK_2 if self.error else MUTED)
+
+        for limit, row in zip(self.data.limits if self.data else [], self.rows):
+            severity = "stale" if self.error else limit.severity
+            update(row["percent"], text=f"{round(limit.percent)}%")
+            bar_key = (limit.percent, severity)
+            if bar_key != row["bar_key"]:
+                row["image"] = ImageTk.PhotoImage(bar_image(self.px(PANEL_WIDTH), self.px(BAR_HEIGHT), *bar_key))
+                row["bar"].configure(image=row["image"])
+                row["bar_key"] = bar_key
+            update(row["reset"], text=usage.format_reset(limit.resets_at))
+            status = None if self.error else status_text(limit)
+            update(row["status"], text=status or "")
+            update(row["status_icon"], text="⚠" if status else "", fg=FILL[limit.severity])
+
+        if self.footer:
             parts = ", ".join(f"{name} {round(pct)}%" for name, pct in self.data.breakdown)
-            tk.Label(self.body, text=f"This week: {parts}", font=(FONT, 8), fg=MUTED, bg=SURFACE,
-                     wraplength=width, justify="left", anchor="w").pack(fill="x", pady=(self.px(2), 0))
+            update(self.footer, text=f"This week: {parts}")
 
     def fit(self):
         """Keep the whole panel inside one monitor's work area as its height changes.
@@ -355,7 +393,9 @@ class App:
             x = min(max(x, left), right - w)
             y = min(max(y, top), bottom - h)
         self.pos = (x, y)
-        self.root.geometry(f"+{x}+{y}")
+        if (x, y, w, h) != self.placed:
+            self.placed = (x, y, w, h)
+            self.root.geometry(f"+{x}+{y}")
 
     def drag_start(self, event):
         if not isinstance(event.widget, tk.Widget) or isinstance(event.widget, tk.Menu):
