@@ -9,11 +9,13 @@ the weekly limits and when each resets. Same numbers as Settings > Usage in the 
 
 It reads the OAuth token Claude Code stores in `%USERPROFILE%\.claude\.credentials.json`
 (`CLAUDE_CONFIG_DIR` is respected) and calls `https://api.anthropic.com/api/oauth/usage`, the
-endpoint behind Claude Code's `/usage`. It polls every 3 minutes, backing off to 10 minutes if
-rate limited.
+endpoint behind Claude Code's `/usage`. It polls every 3 minutes, retries after 30 seconds when
+offline (at login or after sleep) and backs off to 10 minutes if rate limited.
 
-- The endpoint is undocumented and may change. `usage.py` reads the `limits` list first and falls
-  back to the older `five_hour` / `seven_day` keys.
+- The endpoint is undocumented and may change. `usage.py` reads the `limits` list first, skips any
+  entry it can't read, and falls back to the older `five_hour` / `seven_day` keys if none is left.
+  If nothing is readable the panel says "Unexpected data" and keeps the last good numbers.
+- Errors go to `widget.log` (see below), since `pythonw` has no console.
 - The widget never refreshes the token: refresh tokens rotate, so doing it here would log Claude
   Code out. When the token expires the panel says so; running Claude Code once refreshes it.
 
