@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -39,7 +40,14 @@ class ParseUsage(unittest.TestCase):
                          ["Session (5h)", "Weekly (all models)", "Weekly (Fable)"])
         self.assertEqual([l.severity for l in u.limits], ["normal", "critical", "normal"])
         self.assertEqual(u.session.percent, 46)
-        self.assertEqual(u.limits[0].resets_at, datetime(2026, 10, 27, 5, 59, 59, 586113, tzinfo=timezone.utc))
+        self.assertEqual(u.limits[0].resets_at, datetime(2026, 10, 27, 6, 0, tzinfo=timezone.utc))
+
+    def test_reset_times_round_to_the_minute(self):
+        # The API sent these two for the same reset; they showed as 5:59 pm and 6:00 pm.
+        self.assertEqual(usage.parse_time("2026-10-27T06:59:59.586130+00:00"),
+                         usage.parse_time("2026-10-27T07:00:00+00:00"))
+        self.assertEqual(usage.parse_time("2026-10-27T23:30:00.469646+00:00"),
+                         datetime(2026, 10, 27, 23, 30, tzinfo=timezone.utc))
 
     def test_breakdown_sorted_without_zero_rows(self):
         u = usage.parse_usage(SAMPLE, now=NOW)
@@ -50,11 +58,57 @@ class ParseUsage(unittest.TestCase):
         u = usage.parse_usage(data, now=NOW)
         self.assertEqual([(l.label, l.percent) for l in u.limits],
                          [("Session (5h)", 46.0), ("Weekly (all models)", 51.0)])
+        self.assertEqual(u.session.percent, 46.0)
 
     def test_unknown_kind_gets_readable_label(self):
         u = usage.parse_usage({"limits": [{"kind": "monthly_all", "percent": 5}]}, now=NOW)
         self.assertEqual(u.limits[0].label, "Monthly all")
         self.assertIsNone(u.limits[0].resets_at)
+
+    def test_session_found_by_kind_not_label(self):
+        u = usage.parse_usage({"limits": [{"kind": "weekly_all", "percent": 9},
+                                          {"kind": "session", "percent": 12,
+                                           "scope": {"surface": "Claude Code"}}]}, now=NOW)
+        self.assertEqual(u.session.label, "Session (Claude Code)")
+        self.assertEqual(u.session.percent, 12)
+
+
+class ParseUsageShapes(unittest.TestCase):
+    """The endpoint is undocumented: an odd shape must degrade, never blank the widget."""
+
+    def test_scope_names_as_strings(self):
+        u = usage.parse_usage({"limits": [{"kind": "weekly_scoped", "group": "weekly", "percent": 3,
+                                           "scope": {"model": "Opus", "surface": None}}]}, now=NOW)
+        self.assertEqual(u.limits[0].label, "Weekly (Opus)")
+
+    def test_unreadable_limit_is_skipped(self):
+        data = {**SAMPLE, "limits": ["oops", {"kind": "weekly_all", "percent": "lots"}] + SAMPLE["limits"][:1]}
+        u = usage.parse_usage(data, now=NOW)
+        self.assertEqual([l.label for l in u.limits], ["Session (5h)"])
+
+    def test_unreadable_limits_fall_back_to_windows(self):
+        u = usage.parse_usage({**SAMPLE, "limits": [{"kind": 5}]}, now=NOW)
+        self.assertEqual([l.label for l in u.limits], ["Session (5h)", "Weekly (all models)"])
+
+    def test_nothing_readable_is_a_format_error(self):
+        for data in ({}, {"limits": "none", "five_hour": {"utilization": None}}, ["not", "a", "dict"]):
+            with self.assertRaises(usage.UsageError) as ctx:
+                usage.parse_usage(data, now=NOW)
+            self.assertEqual(ctx.exception.kind, "format")
+
+    def test_odd_breakdown_rows_are_ignored(self):
+        data = {**SAMPLE, "seven_day_breakdown": {"rows": [None, {"key": "chat", "percent": "4"},
+                                                           {"percent": 10}, {"key": "x", "percent": 7}]}}
+        self.assertEqual(usage.parse_usage(data, now=NOW).breakdown, [("x", 7)])
+        self.assertEqual(usage.parse_usage({**SAMPLE, "seven_day_breakdown": {"rows": 5}}, now=NOW).breakdown, [])
+
+    def test_non_json_response_is_a_format_error(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"<html>Bad gateway</html>"
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            with self.assertRaises(usage.UsageError) as ctx:
+                usage.fetch_raw("token")
+        self.assertEqual(ctx.exception.kind, "format")
 
 
 class Severity(unittest.TestCase):
@@ -109,6 +163,13 @@ class ReadToken(unittest.TestCase):
         with self.assertRaises(usage.UsageError) as ctx:
             usage.read_token(path, now=NOW.timestamp())
         self.assertEqual(ctx.exception.kind, "login")
+
+    def test_unreadable_login_is_a_login_error(self):
+        for oauth in ({"expiresAt": 1}, None, "token"):
+            path = self.write({"claudeAiOauth": oauth})
+            with self.assertRaises(usage.UsageError) as ctx:
+                usage.read_token(path, now=NOW.timestamp())
+            self.assertEqual(ctx.exception.kind, "login")
 
     def test_missing_file(self):
         with self.assertRaises(usage.UsageError) as ctx:

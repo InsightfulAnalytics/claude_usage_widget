@@ -24,6 +24,7 @@ import usage
 
 APP = "claude_usage_widget"
 POLL_SECONDS = 180
+RETRY_SECONDS = 30  # after a network failure, e.g. at login or resume before the network is up
 BACKOFF_SECONDS = 600
 TICK_MS = 30_000  # re-render countdowns between fetches
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP
@@ -43,7 +44,8 @@ FILL = {"normal": "#3987e5", "warning": "#fab219", "critical": "#d03b3b", "stale
 TRACK_MIX = 0.28
 PANEL_WIDTH = 280
 BAR_HEIGHT = 8
-ERROR_SHORT = {"login": "Login expired", "rate_limited": "Rate limited", "network": "Offline"}
+ERROR_SHORT = {"login": "Login expired", "rate_limited": "Rate limited", "network": "Offline",
+               "format": "Unexpected data"}
 
 log = logging.getLogger(APP)
 
@@ -88,6 +90,12 @@ def bar_image(width, height, percent, severity):
     if filled > 0:
         draw.rounded_rectangle((0, 0, max(filled, h) - 1, h - 1), radius=h // 2, fill=fill)
     return img.resize((width, height), Image.LANCZOS)
+
+
+def next_poll_delay(result):
+    if isinstance(result, usage.UsageError):
+        return {"rate_limited": BACKOFF_SECONDS, "network": RETRY_SECONDS}.get(result.kind, POLL_SECONDS)
+    return POLL_SECONDS
 
 
 def update(widget, **options):
@@ -159,8 +167,12 @@ class App:
         self.layout = None
         self.placed = None
         self.drag = None
+        self.tray_thread = None
+        self.now = lambda: datetime.now(timezone.utc)
 
         self.root = tk.Tk()
+        # Tk's default prints the traceback to stderr, which pythonw throws away.
+        self.root.report_callback_exception = lambda *exc: log.error("Tk callback failed", exc_info=exc)
         self.root.title("Claude usage")
         self.root.overrideredirect(True)
         self.root.configure(bg=BORDER)
@@ -195,10 +207,10 @@ class App:
 
         x, y = self.settings["x"], self.settings["y"]
         self.pos = (x, y) if x is not None and y is not None else None
+        if not self.settings["visible"]:
+            self.root.withdraw()  # before the first render, which would otherwise map it briefly
         self.apply_topmost()
         self.render()
-        if not self.settings["visible"]:
-            self.root.withdraw()
 
     def px(self, value):
         return round(value * self.scale)
@@ -208,7 +220,8 @@ class App:
         self.events.put(event)
 
     def run(self):
-        threading.Thread(target=self.icon.run, daemon=True).start()
+        self.tray_thread = threading.Thread(target=self.icon.run, daemon=True)
+        self.tray_thread.start()
         threading.Thread(target=self.poll, daemon=True).start()
         self.root.after(250, self.drain)
         self.root.after(TICK_MS, self.tick)
@@ -216,22 +229,21 @@ class App:
 
     def poll(self):
         while True:
-            delay = POLL_SECONDS
             try:
                 result = usage.fetch_usage()
             except usage.UsageError as e:
                 log.warning("fetch: %s", e)
                 result = e
-                if e.kind == "rate_limited":
-                    delay = BACKOFF_SECONDS
             except Exception as e:  # keep polling whatever happens
                 log.exception("fetch failed")
-                result = usage.UsageError("network", f"Unexpected error ({e.__class__.__name__}).")
+                result = usage.UsageError("error", f"Unexpected error ({e.__class__.__name__}).")
             self.post("data", result)
-            self.wake.wait(delay)
+            self.wake.wait(next_poll_delay(result))
             self.wake.clear()
 
     def drain(self):
+        # Reschedule first: an exception below must not stop the loop for good.
+        self.root.after(250, self.drain)
         while not self.events.empty():
             name, *args = self.events.get_nowait()
             if name == "data":
@@ -252,11 +264,10 @@ class App:
             elif name == "quit":
                 self.quit()
                 return
-        self.root.after(250, self.drain)
 
     def tick(self):
-        self.render()
         self.root.after(TICK_MS, self.tick)
+        self.render()
 
     def update_tray(self):
         session = self.data.session if self.data else None
@@ -273,14 +284,15 @@ class App:
             reset = limit.resets_at
             when = ""
             if reset:
-                left = (reset - datetime.now(timezone.utc)).total_seconds()
+                left = (reset - self.now()).total_seconds()
                 when = f", resets {reset.astimezone():%a} " if left >= 86400 else ", resets "
                 when += usage.format_clock(reset)
             lines.append(f"{limit.label.split(' (')[0]} {round(limit.percent)}%{when}")
         if self.error:
             lines.append(ERROR_SHORT.get(self.error.kind, "Error"))
+        # No update_menu() here: data never changes the menu, and rebuilding it from this thread
+        # can destroy the menu while it is open on the tray thread.
         self.icon.title = "\n".join(lines or ["Claude usage: loading"])[:127]
-        self.icon.update_menu()
 
     def render(self):
         # Rebuilding every Tk widget on each 30 s tick made the panel flicker, so widgets are only
@@ -351,12 +363,14 @@ class App:
             self.footer.pack(fill="x", pady=(self.px(2), 0))
 
     def fill(self):
+        now = self.now()
         if self.error:
             update(self.note_icon, text="⚠")
             update(self.note, text=ERROR_SHORT.get(self.error.kind, "Error"), fg=INK_2)
         else:
             update(self.note_icon, text="")
-            update(self.note, text=f"updated {usage.format_age(self.data.fetched_at)}" if self.data else "", fg=MUTED)
+            age = usage.format_age(self.data.fetched_at, now) if self.data else None
+            update(self.note, text=f"updated {age}" if age else "", fg=MUTED)
         if self.message:
             update(self.message, text=str(self.error) if self.error else "Loading…", fg=INK_2 if self.error else MUTED)
 
@@ -368,7 +382,7 @@ class App:
                 row["image"] = ImageTk.PhotoImage(bar_image(self.px(PANEL_WIDTH), self.px(BAR_HEIGHT), *bar_key))
                 row["bar"].configure(image=row["image"])
                 row["bar_key"] = bar_key
-            update(row["reset"], text=usage.format_reset(limit.resets_at))
+            update(row["reset"], text=usage.format_reset(limit.resets_at, now))
             status = None if self.error else status_text(limit)
             update(row["status"], text=status or "")
             update(row["status_icon"], text="⚠" if status else "", fg=FILL[limit.severity])
@@ -436,6 +450,9 @@ class App:
     def quit(self):
         self.save_settings()
         self.icon.stop()
+        if self.tray_thread:
+            # The tray thread removes the icon on its way out; exiting first leaves a ghost icon.
+            self.tray_thread.join(timeout=2)
         self.root.destroy()
 
 
@@ -451,7 +468,11 @@ def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=DATA_DIR / "widget.log", level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    App().run()
+    try:
+        App().run()
+    except Exception:
+        log.exception("widget stopped")  # pythonw has no console to show it
+        raise
     del mutex
 
 

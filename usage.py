@@ -11,27 +11,28 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_BETA = "oauth-2025-04-20"
 
 KIND_LABELS = {"session": "Session (5h)", "weekly_all": "Weekly (all models)"}
-# Fallback when the response has no `limits` list (older shape).
+# Fallback when the response has no usable `limits` list (older shape).
 WINDOW_LABELS = {
     "five_hour": "Session (5h)",
     "seven_day": "Weekly (all models)",
     "seven_day_opus": "Weekly (Opus)",
     "seven_day_sonnet": "Weekly (Sonnet)",
 }
+SESSION_KINDS = ("session", "five_hour")
 SEVERITY_ORDER = ["normal", "warning", "critical"]
 WARNING_AT = 75
 CRITICAL_AT = 90
 
 
 class UsageError(Exception):
-    """A fetch that produced no usable numbers. `kind` is login, rate_limited or network."""
+    """A fetch that produced no usable numbers. `kind` is login, rate_limited, network or format."""
 
     def __init__(self, kind, message):
         super().__init__(message)
@@ -40,6 +41,7 @@ class UsageError(Exception):
 
 @dataclass
 class Limit:
+    kind: str
     label: str
     percent: float
     resets_at: datetime | None
@@ -54,7 +56,7 @@ class Usage:
 
     @property
     def session(self):
-        return next((l for l in self.limits if l.label == KIND_LABELS["session"]), None)
+        return next((l for l in self.limits if l.kind in SESSION_KINDS), None)
 
 
 def credentials_path():
@@ -66,12 +68,12 @@ def read_token(path=None, now=None):
     path = path or credentials_path()
     try:
         oauth = json.loads(Path(path).read_text(encoding="utf-8"))["claudeAiOauth"]
-    except (OSError, ValueError, KeyError) as e:
+        token, expires_ms = oauth["accessToken"], float(oauth.get("expiresAt") or 0)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         raise UsageError("login", f"No Claude Code login found ({e.__class__.__name__}).")
-    expires_ms = oauth.get("expiresAt") or 0
     if expires_ms and expires_ms / 1000 < (now or time.time()):
         raise UsageError("login", "Login expired. Run Claude Code once to refresh it.")
-    return oauth["accessToken"]
+    return token
 
 
 def fetch_raw(token, timeout=15):
@@ -92,6 +94,8 @@ def fetch_raw(token, timeout=15):
         raise UsageError("network", f"HTTP {e.code} from the usage endpoint.")
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise UsageError("network", f"Offline or unreachable ({e.__class__.__name__}).")
+    except ValueError:
+        raise UsageError("format", "The usage endpoint sent something that isn't JSON.")
 
 
 def fetch_usage():
@@ -108,40 +112,72 @@ def severity_for(percent, api_severity=None):
 
 
 def parse_time(value):
-    if not value:
+    """ISO time rounded to the minute: the API sends one reset as 06:59:59.586 and another as
+    07:00:00, which would otherwise show as 5:59 pm and 6:00 pm side by side."""
+    if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return (dt + timedelta(seconds=30)).replace(second=0, microsecond=0)
+
+
+def display_name(value):
+    if isinstance(value, dict):
+        return value.get("display_name")
+    return value if isinstance(value, str) else None
 
 
 def limit_label(item):
     kind = item.get("kind") or "limit"
-    scope = item.get("scope") or {}
-    scoped_name = (scope.get("model") or {}).get("display_name") or (scope.get("surface") or {}).get("display_name")
+    scope = item.get("scope")
+    scope = scope if isinstance(scope, dict) else {}
+    scoped_name = display_name(scope.get("model")) or display_name(scope.get("surface"))
     if scoped_name:
         prefix = "Weekly" if item.get("group") == "weekly" else kind.replace("_", " ").capitalize()
         return f"{prefix} ({scoped_name})"
     return KIND_LABELS.get(kind, kind.replace("_", " ").capitalize())
 
 
+def parse_limit(item):
+    percent = float(item.get("percent") or 0)
+    return Limit(str(item.get("kind") or "limit"), limit_label(item), percent,
+                 parse_time(item.get("resets_at")), severity_for(percent, item.get("severity")))
+
+
 def parse_usage(data, now=None):
+    """Skips any limit it can't read rather than failing the whole fetch: the endpoint is
+    undocumented, so a new field shape must not blank the widget."""
+    if not isinstance(data, dict):
+        raise UsageError("format", "The usage endpoint sent an unexpected shape.")
     limits = []
-    for item in data.get("limits") or []:
-        percent = float(item.get("percent") or 0)
-        limits.append(Limit(limit_label(item), percent, parse_time(item.get("resets_at")),
-                            severity_for(percent, item.get("severity"))))
+    for item in data.get("limits") if isinstance(data.get("limits"), list) else []:
+        try:
+            limits.append(parse_limit(item))
+        except (AttributeError, TypeError, ValueError):
+            continue
     if not limits:
         for key, label in WINDOW_LABELS.items():
             window = data.get(key)
-            if window and window.get("utilization") is not None:
+            try:
                 percent = float(window["utilization"])
-                limits.append(Limit(label, percent, parse_time(window.get("resets_at")), severity_for(percent)))
+            except (KeyError, TypeError, ValueError):
+                continue
+            limits.append(Limit(key, label, percent, parse_time(window.get("resets_at")), severity_for(percent)))
+    if not limits:
+        raise UsageError("format", "No usage numbers in the response.")
 
-    rows = (data.get("seven_day_breakdown") or {}).get("rows") or []
-    breakdown = sorted(((r.get("display_name") or r.get("key"), r.get("percent") or 0)
-                        for r in rows if (r.get("percent") or 0) > 0), key=lambda r: -r[1])
+    breakdown = []
+    rows = data.get("seven_day_breakdown")
+    rows = rows.get("rows") if isinstance(rows, dict) else None
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        name, percent = r.get("display_name") or r.get("key"), r.get("percent")
+        if isinstance(name, str) and isinstance(percent, (int, float)) and percent > 0:
+            breakdown.append((name, percent))
+    breakdown.sort(key=lambda r: -r[1])
     return Usage(limits, breakdown, now or datetime.now(timezone.utc))
 
 
