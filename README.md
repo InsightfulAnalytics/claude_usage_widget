@@ -38,13 +38,16 @@ time the file records), and reads token usage from the session transcripts under
 | Running | green dot | Working on a turn. |
 | Unknown | grey dot | The status could not be read (a Claude Code update may have changed the file). |
 
-Each row shows the time in that state, the context fill as a small bar with a % (amber from 60%,
-red from 80%), and the session total: every token the session and its subagents have used,
+Each row is named by the session's title: a name you gave it (`/rename`, `claude -n`, a rename from
+the Claude app, or a hook's `sessionTitle`), else the title Claude Code generates from the first
+prompt. Claude Code's default name, the folder plus two characters (`markshot-c1`), is the last
+resort. It also shows the time in that state, the context fill as a small bar with a % (amber from
+60%, red from 80%), and the session total: every token the session and its subagents have used,
 counting each reply once. Context and window size follow the
 [claude-context-status](https://github.com/InsightfulAnalytics/claude-context-status) VS Code
 extension: the latest main-conversation reply's input + cache tokens, against the window named by
-the session's model or Claude Code's `model` setting (`opus[1m]` means 1M), else 200k; usage
-above 200k means 1M. Hover a row for the details.
+the session's model or Claude Code's `model` setting (`opus[1m]` means 1M), else 200k; usage above
+200k means 1M. Hover a row for the details.
 
 - **Click a row** to go to its terminal. For a session in a VS Code terminal the panel raises the
   VS Code window that is already open and asks claude-context-status (0.3.0 or later) over its
