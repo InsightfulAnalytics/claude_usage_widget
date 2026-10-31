@@ -1,7 +1,8 @@
 # claude_usage_widget
 
-A Windows tray icon and small desktop panel showing Claude plan usage (the 5-hour session limit,
-the weekly limits and when each resets, the same numbers as Settings > Usage in the Claude app)
+A Windows tray icon and small desktop panel showing Claude plan usage (the 5-hour session limit
+where the plan has one, the weekly limits and when each resets, the same numbers as Settings >
+Usage in the Claude app)
 and every Claude Code session running on the machine: which ones need you, which are still
 running, how full each one's context is and how many tokens it has used.
 
@@ -77,10 +78,12 @@ icon ever shows.
 
 ## Use
 
-- **Tray icon:** the session % on a coloured square. Blue below 75%, amber from 75%, red from 90%,
-  grey when the numbers are stale (offline, rate limited or logged out). `0` while no 5-hour
-  window is open (the next message starts one), three dots before the first numbers arrive. A red
-  corner dot while a session needs you. Hover for both limits and their reset times.
+- **Tray icon:** the 5-hour session % on a coloured square, or the weekly % on a plan without a
+  session limit (Ultra). It follows whatever limits the plan reports, so a plan change needs no
+  setting. Blue below 75%, amber from 75%, red from 90%, grey when the numbers are stale (offline,
+  rate limited or logged out), three dots before the first numbers arrive. A red corner dot while
+  a session needs you. Hover for the first two limits and their reset times.
+- **Usage bars:** one per limit the plan has, so no session bar on Ultra.
 - **Keep it on the taskbar:** Windows 11 puts new tray icons in the overflow (^). Drag the icon
   from there onto the taskbar once, or turn it on under Settings > Personalization > Taskbar >
   Other system tray icons. The icon has its own ID, so Windows remembers this for the widget

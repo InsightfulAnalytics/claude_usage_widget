@@ -224,13 +224,12 @@ class Tray(WidgetTest):
         self.assertEqual(self.app.tray_state[:2], (None, "stale"))
         self.assertNotEqual(widget.tray_image(None, "stale").tobytes(), widget.tray_image("0", "stale").tobytes())
 
-    def test_no_open_session_window_shows_zero(self):
+    def test_plan_without_a_session_limit_shows_the_weekly_percent(self):
         self.app.data = usage.parse_usage({**SAMPLE, "five_hour": None, "limits": SAMPLE["limits"][1:]}, now=NOW)
         self.app.update_tray()
-        self.assertEqual(self.app.tray_state[:2], ("0", "normal"))
-        self.assertTrue(self.app.icon.title.startswith("Session 0%, not started\n"))
-        self.app.render()
-        self.assertEqual(self.app.rows[0]["reset"].cget("text"), widget.NOT_STARTED)
+        self.assertEqual(self.app.tray_state[:2], ("91", "critical"))
+        self.assertTrue(self.app.icon.title.startswith("Weekly 91%, resets "))
+        self.assertIn("\nWeekly (Fable) 0%, resets", self.app.icon.title)
 
     def test_icon_is_drawn_again_once_shown(self):
         # pystray can drop an image set while it is still showing the icon.
