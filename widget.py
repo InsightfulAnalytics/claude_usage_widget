@@ -52,7 +52,6 @@ FILL = {"normal": "#3987e5", "warning": "#fab219", "critical": "#d03b3b", "stale
 TRACK_MIX = 0.28
 PANEL_WIDTH = 340
 BAR_HEIGHT = 8
-NOT_STARTED = "Starts with your next message"
 ERROR_SHORT = {"login": "Login expired", "rate_limited": "Rate limited", "network": "Offline",
                "format": "Unexpected data"}
 
@@ -439,9 +438,9 @@ class App:
                 log.exception("notification failed")
 
     def update_tray(self):
-        session = self.data.session if self.data else None
-        if session:
-            text, severity = str(round(session.percent)), session.severity
+        headline = self.data.headline if self.data else None
+        if headline:
+            text, severity = str(round(headline.percent)), headline.severity
         else:
             text, severity = None, "stale"
         if self.error:
@@ -454,12 +453,14 @@ class App:
             lines.append(f"{n} session{'s' if n > 1 else ''} need{'' if n > 1 else 's'} you")
         for limit in (self.data.limits[:2] if self.data else []):
             reset = limit.resets_at
-            when = ", not started" if limit.idle else ""
+            when = ""
             if reset:
                 left = (reset - self.now()).total_seconds()
                 when = f", resets {reset.astimezone():%a} " if left >= 86400 else ", resets "
                 when += usage.format_clock(reset)
-            lines.append(f"{limit.label.split(' (')[0]} {round(limit.percent)}%{when}")
+            # "Session" and "Weekly" alone; a model's weekly limit keeps its name.
+            plain = limit.kind in usage.SESSION_KINDS + usage.WEEKLY_KINDS
+            lines.append(f"{limit.label.split(' (')[0] if plain else limit.label} {round(limit.percent)}%{when}")
         if self.error:
             lines.append(ERROR_SHORT.get(self.error.kind, "Error"))
         title = "\n".join(lines or ["Claude usage: loading"])[:127]
@@ -618,7 +619,7 @@ class App:
                 row["image"] = ImageTk.PhotoImage(bar_image(self.px(PANEL_WIDTH), self.px(BAR_HEIGHT), *bar_key))
                 row["bar"].configure(image=row["image"])
                 row["bar_key"] = bar_key
-            update(row["reset"], text=NOT_STARTED if limit.idle else usage.format_reset(limit.resets_at, now))
+            update(row["reset"], text=usage.format_reset(limit.resets_at, now))
             status = None if self.error else status_text(limit)
             update(row["status"], text=status or "")
             update(row["status_icon"], text="⚠" if status else "", fg=FILL[limit.severity])

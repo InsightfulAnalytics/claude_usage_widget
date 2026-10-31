@@ -72,21 +72,18 @@ class ParseUsage(unittest.TestCase):
         self.assertEqual(u.session.label, "Session (Claude Code)")
         self.assertEqual(u.session.percent, 12)
 
-    def test_no_open_session_window_is_an_idle_session_at_zero(self):
-        # Seen live: between windows the endpoint sends "five_hour": null and no session limit.
-        data = {**SAMPLE, "five_hour": None, "limits": SAMPLE["limits"][1:]}
-        u = usage.parse_usage(data, now=NOW)
-        self.assertEqual((u.session.label, u.session.percent, u.session.resets_at, u.session.idle),
-                         ("Session (5h)", 0.0, None, True))
-        self.assertEqual(u.limits[0], u.session)
-        self.assertEqual(len(u.limits), 3)
+    def test_headline_is_the_session_limit(self):
+        self.assertEqual(usage.parse_usage(SAMPLE, now=NOW).headline.kind, "session")
 
-    def test_idle_session_needs_the_explicit_null(self):
-        no_key = {k: v for k, v in SAMPLE.items() if k != "five_hour"}
-        no_key["limits"] = SAMPLE["limits"][1:]
-        self.assertIsNone(usage.parse_usage(no_key, now=NOW).session)
-        both = {**SAMPLE, "five_hour": None}  # the limits list still has a session: it wins
-        self.assertFalse(usage.parse_usage(both, now=NOW).session.idle)
+    def test_plan_without_a_session_limit_headlines_the_weekly_one(self):
+        # Seen live on Ultra: "five_hour": null and no session entry, inactive limits still listed.
+        data = {**SAMPLE, "five_hour": None, "limits": SAMPLE["limits"][2:] + SAMPLE["limits"][1:2]}
+        u = usage.parse_usage(data, now=NOW)
+        self.assertIsNone(u.session)
+        self.assertEqual((u.headline.label, u.headline.percent), ("Weekly (all models)", 91))
+        self.assertEqual([l.label for l in u.limits], ["Weekly (Fable)", "Weekly (all models)"])
+        old_shape = usage.parse_usage({"five_hour": None, "seven_day": {"utilization": 35.0}}, now=NOW)
+        self.assertEqual((old_shape.headline.label, old_shape.headline.percent), ("Weekly (all models)", 35.0))
 
 
 class ParseUsageShapes(unittest.TestCase):
