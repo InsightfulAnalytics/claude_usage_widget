@@ -67,6 +67,8 @@ CONTEXT_CRITICAL_AT = 80
 CLICK_SLOP = 4  # pixels a press may move and still count as a click, not a drag
 FLASH_SECONDS = 4
 TIP_DELAY_MS = 500
+GO_TO_NOTES = {focus.NO_EXTENSION: "Reload VS Code to jump to the tab",
+               focus.NO_TAB: "Its tab isn't in this VS Code window"}
 
 log = logging.getLogger(APP)
 
@@ -167,7 +169,7 @@ def session_tip(s, now):
         details.insert(0, f"started {s.started_at.astimezone():%a} {usage.format_clock(s.started_at)}")
     lines.append(", ".join(d for d in details if d))
     lines.append(s.session_id)
-    lines.append("Click: go to its terminal. Right-click: more.")
+    lines.append("Click: go to its terminal (or copy its resume command if it has none). Right-click: more.")
     return "\n".join(lines)
 
 
@@ -673,6 +675,8 @@ class App:
             self.go_to(self.session_at(press[2]))
 
     def go_to(self, s):
+        """Bring the session's terminal forward. With no terminal to bring forward, copy its resume
+        command instead, to paste into a new VS Code terminal."""
         if not s:
             return
         try:
@@ -680,8 +684,10 @@ class App:
         except OSError:
             log.exception("focus failed")
             where = None
-        if not where:
-            self.flash = ("Couldn't find its window", time.monotonic() + FLASH_SECONDS)
+        if where is None:
+            self.copy(focus.resume_command(s.session_id), "No terminal found: resume command copied")
+        elif where in GO_TO_NOTES:
+            self.flash = (GO_TO_NOTES[where], time.monotonic() + FLASH_SECONDS)
             self.fill_sessions(self.now())
 
     def popup(self, event):
@@ -700,10 +706,10 @@ class App:
                          state="normal" if s.cwd and Path(s.cwd).is_dir() else "disabled")
         menu.tk_popup(event.x_root, event.y_root)
 
-    def copy(self, text):
+    def copy(self, text, note="Copied"):
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
-        self.flash = ("Copied", time.monotonic() + FLASH_SECONDS)
+        self.flash = (note, time.monotonic() + FLASH_SECONDS)
         self.fill_sessions(self.now())
 
     def scroll(self, event):

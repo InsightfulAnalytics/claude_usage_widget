@@ -181,19 +181,28 @@ class Sessions(WidgetTest):
         self.app.release(mock.Mock(widget=widget_, x_root=x + dx, y_root=y))
 
     def test_click_goes_to_the_session(self):
-        with mock.patch.object(widget.focus, "focus_session", return_value="vscode") as focus_session:
+        with mock.patch.object(widget.focus, "focus_session", return_value=widget.focus.TAB) as focus_session:
             self.click(self.app.session_rows[1]["state"])
         focus_session.assert_called_once_with(2)
+        self.assertEqual(self.app.sessions_note.cget("text"), "2 sessions")
 
     def test_dragging_a_row_moves_the_panel_only(self):
         with mock.patch.object(widget.focus, "focus_session") as focus_session:
             self.click(self.app.session_rows[0]["name"], dx=30)
         focus_session.assert_not_called()
 
-    def test_no_window_found_says_so(self):
-        with mock.patch.object(widget.focus, "focus_session", return_value=None):
+    def test_no_terminal_copies_the_resume_command(self):
+        with mock.patch.object(widget.focus, "focus_session", return_value=None), \
+                mock.patch.object(self.app.root, "clipboard_clear"), \
+                mock.patch.object(self.app.root, "clipboard_append") as clipboard_append:  # keep the real clipboard
             self.click(self.app.session_rows[0]["name"])
-        self.assertEqual(self.app.sessions_note.cget("text"), "Couldn't find its window")
+        clipboard_append.assert_called_once_with("claude --resume s1")
+        self.assertEqual(self.app.sessions_note.cget("text"), "No terminal found: resume command copied")
+
+    def test_vs_code_without_the_extension_says_to_reload(self):
+        with mock.patch.object(widget.focus, "focus_session", return_value=widget.focus.NO_EXTENSION):
+            self.click(self.app.session_rows[0]["name"])
+        self.assertEqual(self.app.sessions_note.cget("text"), "Reload VS Code to jump to the tab")
 
     def test_tip_describes_the_session(self):
         tip = widget.session_tip(session(1, sessions.NEEDS_YOU, waiting_for="permission"), NOW)

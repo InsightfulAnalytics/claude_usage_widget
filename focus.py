@@ -1,20 +1,32 @@
 """Bring the terminal a Claude Code session runs in to the front.
 
-VS Code terminals: the claude-context-status extension (0.2.0 or later) handles
-vscode://timosborn.claude-context-status/focus?shellPid=<pid> and shows the terminal whose shell
-has that PID. The shell is the session's nearest ancestor whose parent is Code.exe. Other
-sessions run in a console window: attach to the session's console and raise the window that owns
-it (Windows Terminal owns the pseudo-console window of each tab it hosts).
+VS Code terminals: the widget raises the VS Code window that is already open, then asks the
+claude-context-status extension (0.3.0 or later) over its named pipe to show the terminal whose
+shell has the session as a child. The shell is the session's nearest ancestor whose parent is
+Code.exe. Nothing is launched, so no second VS Code window can open: a `vscode://` URI would start
+whichever VS Code the protocol is registered to, which can be another install than the one
+running. Other sessions run in a console window: attach to the session's console and raise the
+window that owns it (Windows Terminal owns the pseudo-console window of each tab it hosts).
 """
 
 import ctypes
 import ctypes.wintypes as wintypes
+import json
 import os
 import subprocess
+import threading
 
-FOCUS_URI = "vscode://timosborn.claude-context-status/focus?shellPid={}"
+PIPE_DIR = "\\\\.\\pipe\\"
+PIPE_PREFIX = "claude-context-status-focus-"  # one pipe per VS Code window, named for its extension host
+PIPE_TIMEOUT = 1.0  # seconds a window gets to answer
 CODE_EXES = ("code.exe", "code - insiders.exe")
 MAX_DEPTH = 16  # parent PIDs can be stale and reused; never walk further than this
+
+# What focus_session() managed.
+TAB = "tab"  # the session's VS Code terminal is showing
+NO_EXTENSION = "no-extension"  # VS Code is raised, but no window answered on the pipe
+NO_TAB = "no-tab"  # VS Code is raised, but no window has the session's terminal
+CONSOLE = "console"  # the console window it runs in is raised
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -29,6 +41,7 @@ user32.IsIconic.argtypes = [wintypes.HWND]
 user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
 WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
@@ -101,6 +114,55 @@ def windows_of(pid):
     return found
 
 
+def window_title(hwnd):
+    length = user32.GetWindowTextLengthW(hwnd)
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return buffer.value
+
+
+def focus_pipes():
+    try:
+        return [name for name in os.listdir(PIPE_DIR) if name.startswith(PIPE_PREFIX)]
+    except OSError:
+        return []
+
+
+def ask_pipe(name, shell_pid, timeout=PIPE_TIMEOUT):
+    """The extension's reply ({"found": bool, "workspace": str}), or None when the window doesn't
+    answer in time. The exchange runs on a thread so a busy window can't hang the panel."""
+    result = {}
+
+    def talk():
+        try:
+            with open(PIPE_DIR + name, "r+b", buffering=0) as pipe:
+                pipe.write(json.dumps({"shellPid": shell_pid}).encode() + b"\n")
+                reply = b""
+                while not reply.endswith(b"\n"):
+                    chunk = pipe.read(4096)
+                    if not chunk:
+                        break
+                    reply += chunk
+            result["reply"] = json.loads(reply)
+        except (OSError, ValueError):
+            pass
+
+    thread = threading.Thread(target=talk, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    reply = result.get("reply")
+    return reply if isinstance(reply, dict) else None
+
+
+def pick_window(windows, workspace):
+    """The VS Code window showing `workspace` (its name is in the title), else the first one."""
+    if workspace:
+        for hwnd in windows:
+            if f" - {workspace} - " in f" - {window_title(hwnd)} - ":
+                return hwnd
+    return windows[0] if windows else None
+
+
 def console_window(pid):
     """The window showing `pid`'s console, or None. Needs a process with no console of its own
     (pythonw), since attaching to another console means leaving ours."""
@@ -126,23 +188,31 @@ def raise_window(hwnd):
 
 
 def focus_session(pid):
-    """Bring the session's terminal forward: "vscode", "console", or None when nothing was found.
+    """Bring the session's terminal forward. Returns TAB, NO_EXTENSION, NO_TAB, CONSOLE, or None
+    when there is no terminal to bring forward.
 
-    The widget is the foreground process while handling the click, so Windows lets it raise
-    another window; AllowSetForegroundWindow passes that right on to VS Code for the URI.
+    The widget is the foreground process while it handles the click, so Windows lets it raise
+    another window; the extension only switches the terminal inside its own window.
     """
     procs = processes()
     host = vscode_host(pid, procs)
     if host:
         shell, code = host
-        user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
-        for hwnd in windows_of(top_code(code, procs))[:1]:
+        replies = []
+        for name in focus_pipes():
+            reply = ask_pipe(name, shell)
+            if reply is not None:
+                replies.append(reply)
+                if reply.get("found"):
+                    break
+        found = next((r for r in replies if r.get("found")), None)
+        hwnd = pick_window(windows_of(top_code(code, procs)), found and found.get("workspace"))
+        if hwnd:
             raise_window(hwnd)
-        os.startfile(FOCUS_URI.format(shell))
-        return "vscode"
+        return TAB if found else NO_TAB if replies else NO_EXTENSION
     hwnd = console_window(pid)
     if hwnd and raise_window(hwnd):
-        return "console"
+        return CONSOLE
     return None
 
 
