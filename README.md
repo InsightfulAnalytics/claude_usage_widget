@@ -45,11 +45,13 @@ extension: the latest main-conversation reply's input + cache tokens, against th
 the session's model or Claude Code's `model` setting (`opus[1m]` means 1M), else 200k; usage
 above 200k means 1M. Hover a row for the details.
 
-- **Click a row** to go to its terminal. In a VS Code terminal this needs claude-context-status
-  0.2.0 or later installed: the panel opens
-  `vscode://timosborn.claude-context-status/focus?shellPid=<pid>` and the extension shows that
-  terminal (VS Code may ask once whether to allow it). A session in a console window brings that
-  window forward; for Windows Terminal that is the window, not the tab.
+- **Click a row** to go to its terminal. For a session in a VS Code terminal the panel raises the
+  VS Code window that is already open and asks claude-context-status (0.3.0 or later) over its
+  named pipe to show that terminal; it never starts VS Code, so no second window opens. Without
+  the extension (or before VS Code is reloaded after installing it) only the window comes forward.
+  A session in a console window brings that window forward; for Windows Terminal that is the
+  window, not the tab. A session with no terminal to bring forward gets its resume command
+  (`claude --resume <id>`) copied instead, to paste into a new terminal.
 - **Right-click a row** for Go to terminal, Copy resume command (`claude --resume <id>`), Open
   transcript (selects it in Explorer) and Open folder.
 - **More than 8 sessions:** scroll the mouse wheel over the panel.
