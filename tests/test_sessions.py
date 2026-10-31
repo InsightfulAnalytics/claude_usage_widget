@@ -233,6 +233,17 @@ class MonitorScan(TempDir):
         self.assertEqual(s.subagents.total, 100 + 200 + 2 * 60)
         self.assertEqual(s.transcript, path)
 
+    def test_named_by_title_not_by_folder(self):
+        self.session(1, "a", "idle", nameSource="derived")
+        self.assertEqual(self.monitor.scan()[0].name, "site-1")  # nothing better yet
+        path = self.transcript("a", [{"type": "ai-title", "aiTitle": "Tray icon question mark"}])
+        self.clock[0] += sessions.LOOKUP_RETRY_SECONDS
+        self.assertEqual(self.monitor.scan()[0].name, "Tray icon question mark")
+        self.session(1, "a", "idle", name="Plan Limits", nameSource="rename")
+        self.assertEqual(self.monitor.scan()[0].name, "Plan Limits")
+        write_lines(path, [{"type": "custom-title", "customTitle": "Short Names"}], mode="a")
+        self.assertEqual(self.monitor.scan()[0].name, "Short Names")
+
     def test_transcript_found_by_session_id_when_the_folder_name_differs(self):
         self.session(1, "a", "idle")
         self.transcript("a", [reply("m1", 0)], folder="B--work-site-shortened-1234abcd")

@@ -94,6 +94,7 @@ class SessionFile:
     session_id: str
     cwd: str
     name: str | None
+    name_source: str | None  # "derived" for the default folder name, else set by a rename
     kind: str
     entrypoint: str | None
     status: str | None
@@ -118,7 +119,7 @@ def parse_session_file(data):
         proc_start = None
     return SessionFile(
         pid=pid, session_id=session_id, cwd=text(data.get("cwd")) or "", name=text(data.get("name")),
-        kind=text(data.get("kind")) or "interactive", entrypoint=text(data.get("entrypoint")),
+        name_source=text(data.get("nameSource")), kind=text(data.get("kind")) or "interactive", entrypoint=text(data.get("entrypoint")),
         status=text(data.get("status")), waiting_for=text(data.get("waitingFor")),
         status_since=ms_time(data.get("statusUpdatedAt")), started_at=ms_time(data.get("startedAt")),
         proc_start=proc_start, version=text(data.get("version")))
@@ -548,13 +549,23 @@ class Monitor:
         window, source = resolve_window(reader.attachment if reader else None, usage[2] if usage else None,
                                         self.settings.model(sf.cwd), reader.observed() if reader else 0)
         return Session(
-            pid=sf.pid, session_id=sf.session_id, name=sf.name or Path(sf.cwd).name or str(sf.pid),
+            pid=sf.pid, session_id=sf.session_id, name=display_name(sf, reader),
             title=reader.title if reader else None, cwd=sf.cwd, kind=sf.kind, entrypoint=sf.entrypoint,
             version=sf.version, state=state, waiting_for=sf.waiting_for if state == NEEDS_YOU else None,
             since=since, status_since=sf.status_since, started_at=sf.started_at, model=model,
             context=usage[1] if usage else None, window=window, window_source=source,
             compacted=bool(reader and reader.compacted), main=main, subagents=subagents,
             transcript=reader.path if reader else None, last_write=last_write)
+
+
+def display_name(sf, reader):
+    """What the panel calls a session: the name it was given (/rename, --name, a rename from the
+    Claude app, or a naming hook), else Claude Code's generated title, which summarises the first
+    prompt. Claude Code's default name is the folder plus two characters (`markshot-c1`) and says
+    nothing about the work, so it comes last."""
+    renamed = sf.name if sf.name_source and sf.name_source != "derived" else None
+    return ((reader.custom_title if reader else None) or renamed or (reader.ai_title if reader else None)
+            or sf.name or Path(sf.cwd).name or str(sf.pid))
 
 
 class Alerts:
