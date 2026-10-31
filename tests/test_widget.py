@@ -8,6 +8,8 @@ from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
+from pystray._util import win32
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -209,6 +211,44 @@ class Sessions(WidgetTest):
         self.assertIn("Needs you: permission", tip)
         self.assertIn("Context: 100,000 of 1,000,000 tokens (10.0%)", tip)
         self.assertIn("Session total: 3,000,070 tokens", tip)
+
+
+class Tray(WidgetTest):
+    def setUp(self):
+        super().setUp()
+        self.app = self.make_app()
+        self.app.now = lambda: NOW
+
+    def test_no_numbers_yet_shows_dots(self):
+        self.app.update_tray()
+        self.assertEqual(self.app.tray_state[:2], (None, "stale"))
+        self.assertNotEqual(widget.tray_image(None, "stale").tobytes(), widget.tray_image("0", "stale").tobytes())
+
+    def test_no_open_session_window_shows_zero(self):
+        self.app.data = usage.parse_usage({**SAMPLE, "five_hour": None, "limits": SAMPLE["limits"][1:]}, now=NOW)
+        self.app.update_tray()
+        self.assertEqual(self.app.tray_state[:2], ("0", "normal"))
+        self.assertTrue(self.app.icon.title.startswith("Session 0%, not started\n"))
+        self.app.render()
+        self.assertEqual(self.app.rows[0]["reset"].cget("text"), widget.NOT_STARTED)
+
+    def test_icon_is_drawn_again_once_shown(self):
+        # pystray can drop an image set while it is still showing the icon.
+        self.app.data = usage.parse_usage(copy.deepcopy(SAMPLE), now=NOW)
+        self.app.update_tray()
+        with mock.patch.object(widget, "tray_image", wraps=widget.tray_image) as tray_image, \
+                mock.patch.object(self.app.root, "after"):
+            self.app.post("tray_ready")
+            self.app.drain()
+        tray_image.assert_called_once_with("46", "normal", False)
+
+    def test_icon_goes_out_with_its_own_uid(self):
+        """Windows keeps the icon's taskbar setting against this uID (see TrayIcon)."""
+        sent = []
+        with mock.patch.object(win32, "Shell_NotifyIcon", lambda code, data: sent.append(data)):
+            self.app.icon._message(win32.NIM_MODIFY, win32.NIF_TIP, szTip="hello")
+        self.assertEqual(sent[0].uID, widget.TrayIcon.UID)
+        self.assertEqual(sent[0].szTip, "hello")
 
 
 class Robustness(WidgetTest):

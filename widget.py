@@ -52,6 +52,7 @@ FILL = {"normal": "#3987e5", "warning": "#fab219", "critical": "#d03b3b", "stale
 TRACK_MIX = 0.28
 PANEL_WIDTH = 340
 BAR_HEIGHT = 8
+NOT_STARTED = "Starts with your next message"
 ERROR_SHORT = {"login": "Login expired", "rate_limited": "Rate limited", "network": "Offline",
                "format": "Unexpected data"}
 
@@ -93,12 +94,17 @@ def load_font(size):
 
 
 def tray_image(text, severity, dot=False):
+    """`text` on a square of the severity's colour, or three dots for None (no numbers yet)."""
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=12, fill=FILL[severity])
     ink = "#0b0b0b" if severity == "warning" else "#ffffff"
-    draw.text((size / 2, size / 2), text, fill=ink, font=load_font(46 if len(text) <= 2 else 32), anchor="mm")
+    if text is None:
+        for x in (16, 32, 48):
+            draw.ellipse((x - 6, 26, x + 6, 38), fill=ink)
+    else:
+        draw.text((size / 2, size / 2), text, fill=ink, font=load_font(46 if len(text) <= 2 else 32), anchor="mm")
     if dot:
         # A session needs you. The white ring keeps the dot visible on the red critical square.
         draw.ellipse((size - 25, 0, size - 1, 24), fill=FILL["critical"], outline="#ffffff", width=3)
@@ -229,6 +235,24 @@ def set_starts_with_windows(enabled):
                 pass
 
 
+class TrayIcon(pystray.Icon):
+    """pystray's icon, sent to Windows with its own uID.
+
+    pystray 0.19 sets a misspelt field, so every icon goes out as uID 0. Windows files tray icons
+    under exe path plus uID, so every pystray app run by the same pythonw.exe would share one
+    entry in Settings > Taskbar > Other system tray icons, and showing this one alone on the
+    taskbar couldn't stick. Only the user can make that choice (drag the icon out of the overflow,
+    or use that Settings page): Explorer did not act on IsPromoted written to the entry's
+    registry key. This leans on a pystray internal: requirements.txt pins pystray and a test
+    checks the uID goes out.
+    """
+
+    UID = 0xC1A0  # any fixed number; Windows remembers the icon's settings against it
+
+    def _message(self, code, flags, **kwargs):
+        super()._message(code, flags, uID=self.UID, **kwargs)
+
+
 class MONITORINFO(ctypes.Structure):
     _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
                 ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
@@ -292,7 +316,7 @@ class App:
         self.root.bind_all("<Button-3>", self.popup)
         self.root.bind_all("<MouseWheel>", self.scroll)
 
-        self.icon = pystray.Icon(APP, tray_image("?", "stale"), "Claude usage: loading", menu=pystray.Menu(
+        self.icon = TrayIcon(APP, tray_image(None, "stale"), "Claude usage: loading", menu=pystray.Menu(
             pystray.MenuItem("Show panel", lambda: self.post("toggle"), default=True,
                              checked=lambda item: self.settings["visible"]),
             pystray.MenuItem("Refresh now", lambda: self.wake.set()),
@@ -323,13 +347,19 @@ class App:
         self.events.put(event)
 
     def run(self):
-        self.tray_thread = threading.Thread(target=self.icon.run, daemon=True)
+        self.tray_thread = threading.Thread(target=self.icon.run, kwargs={"setup": self.tray_ready}, daemon=True)
         self.tray_thread.start()
         threading.Thread(target=self.poll, daemon=True).start()
         threading.Thread(target=self.watch, daemon=True).start()
         self.root.after(250, self.drain)
         self.root.after(TICK_MS, self.tick)
         self.root.mainloop()
+
+    def tray_ready(self, icon):
+        # On pystray's setup thread. An image set while the icon was being shown is lost (pystray
+        # reads the image and the title at different moments), so the main thread sets it again.
+        icon.visible = True
+        self.post("tray_ready")
 
     def poll(self):
         while True:
@@ -388,6 +418,9 @@ class App:
             elif name == "startup":
                 set_starts_with_windows(not starts_with_windows())
                 self.icon.update_menu()
+            elif name == "tray_ready":
+                self.tray_state = None
+                self.update_tray()
             elif name == "quit":
                 self.quit()
                 return
@@ -410,7 +443,7 @@ class App:
         if session:
             text, severity = str(round(session.percent)), session.severity
         else:
-            text, severity = "?", "stale"
+            text, severity = None, "stale"
         if self.error:
             severity = "stale"
         attention = [s for s in self.sessions if s.state in sessions.ATTENTION]
@@ -421,7 +454,7 @@ class App:
             lines.append(f"{n} session{'s' if n > 1 else ''} need{'' if n > 1 else 's'} you")
         for limit in (self.data.limits[:2] if self.data else []):
             reset = limit.resets_at
-            when = ""
+            when = ", not started" if limit.idle else ""
             if reset:
                 left = (reset - self.now()).total_seconds()
                 when = f", resets {reset.astimezone():%a} " if left >= 86400 else ", resets "
@@ -585,7 +618,7 @@ class App:
                 row["image"] = ImageTk.PhotoImage(bar_image(self.px(PANEL_WIDTH), self.px(BAR_HEIGHT), *bar_key))
                 row["bar"].configure(image=row["image"])
                 row["bar_key"] = bar_key
-            update(row["reset"], text=usage.format_reset(limit.resets_at, now))
+            update(row["reset"], text=NOT_STARTED if limit.idle else usage.format_reset(limit.resets_at, now))
             status = None if self.error else status_text(limit)
             update(row["status"], text=status or "")
             update(row["status_icon"], text="⚠" if status else "", fg=FILL[limit.severity])

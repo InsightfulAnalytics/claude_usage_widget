@@ -46,6 +46,7 @@ class Limit:
     percent: float
     resets_at: datetime | None
     severity: str
+    idle: bool = False  # a 5-hour window that opens with the next message: nothing used yet
 
 
 @dataclass
@@ -167,6 +168,9 @@ def parse_usage(data, now=None):
             limits.append(Limit(key, label, percent, parse_time(window.get("resets_at")), severity_for(percent)))
     if not limits:
         raise UsageError("format", "No usage numbers in the response.")
+    # The endpoint sends `"five_hour": null` and no session limit while no 5-hour window is open.
+    if "five_hour" in data and data["five_hour"] is None and not any(l.kind in SESSION_KINDS for l in limits):
+        limits.insert(0, Limit("session", KIND_LABELS["session"], 0.0, None, "normal", idle=True))
 
     breakdown = []
     rows = data.get("seven_day_breakdown")

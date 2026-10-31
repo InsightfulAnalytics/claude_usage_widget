@@ -1,2 +1,2 @@
-pystray>=0.19
+pystray==0.19.*  # widget.py TrayIcon overrides a pystray internal; test before upgrading
 Pillow>=10.1
