@@ -72,6 +72,22 @@ class ParseUsage(unittest.TestCase):
         self.assertEqual(u.session.label, "Session (Claude Code)")
         self.assertEqual(u.session.percent, 12)
 
+    def test_no_open_session_window_is_an_idle_session_at_zero(self):
+        # Seen live: between windows the endpoint sends "five_hour": null and no session limit.
+        data = {**SAMPLE, "five_hour": None, "limits": SAMPLE["limits"][1:]}
+        u = usage.parse_usage(data, now=NOW)
+        self.assertEqual((u.session.label, u.session.percent, u.session.resets_at, u.session.idle),
+                         ("Session (5h)", 0.0, None, True))
+        self.assertEqual(u.limits[0], u.session)
+        self.assertEqual(len(u.limits), 3)
+
+    def test_idle_session_needs_the_explicit_null(self):
+        no_key = {k: v for k, v in SAMPLE.items() if k != "five_hour"}
+        no_key["limits"] = SAMPLE["limits"][1:]
+        self.assertIsNone(usage.parse_usage(no_key, now=NOW).session)
+        both = {**SAMPLE, "five_hour": None}  # the limits list still has a session: it wins
+        self.assertFalse(usage.parse_usage(both, now=NOW).session.idle)
+
 
 class ParseUsageShapes(unittest.TestCase):
     """The endpoint is undocumented: an odd shape must degrade, never blank the widget."""
