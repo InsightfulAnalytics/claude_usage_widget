@@ -43,16 +43,15 @@ the Claude app, or a hook's `sessionTitle`), else the title Claude Code generate
 prompt. Claude Code's default name, the folder plus two characters (`markshot-c1`), is the last
 resort. It also shows the time in that state, the context fill as a small bar with a % (amber from
 60%, red from 80%), and the session total: every token the session and its subagents have used,
-counting each reply once. Context and window size follow the
-[claude-context-status](https://github.com/InsightfulAnalytics/claude-context-status) VS Code
-extension: the latest main-conversation reply's input + cache tokens, against the window named by
-the session's model or Claude Code's `model` setting (`opus[1m]` means 1M), else 200k; usage above
-200k means 1M. Hover a row for the details.
+counting each reply once. Context is the latest main-conversation reply's input + cache tokens,
+against the window named by the session's model or Claude Code's `model` setting (`opus[1m]`
+means 1M), else 200k; usage above 200k means 1M. These rules come from claude-context-status, a
+VS Code extension of mine that is not published. Hover a row for the details.
 
 - **Click a row** to go to its terminal. For a session in a VS Code terminal the panel raises the
-  VS Code window that is already open and asks claude-context-status (0.3.0 or later) over its
-  named pipe to show that terminal; it never starts VS Code, so no second window opens. Without
-  the extension (or before VS Code is reloaded after installing it) only the window comes forward.
+  VS Code window that is already open; it never starts VS Code, so no second window opens. With
+  claude-context-status (0.3.0 or later) installed, the panel also asks it over a named pipe to
+  show that terminal; without it, only the window comes forward.
   A session in a console window brings that window forward; for Windows Terminal that is the
   window, not the tab. A session with no terminal to bring forward gets its resume command
   (`claude --resume <id>`) copied instead, to paste into a new terminal.
