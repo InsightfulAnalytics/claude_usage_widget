@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import sessions  # noqa: E402
 
 NOW = datetime(2026, 10, 31, 4, 0, tzinfo=timezone.utc)
+CWD = "B:\\work\\site" if sys.platform == "win32" else "/work/site"  # Session.folder reads it as a path
 MS = lambda dt: int(dt.timestamp() * 1000)  # noqa: E731
 ISO = lambda dt: dt.isoformat().replace("+00:00", "Z")  # noqa: E731
 
@@ -284,7 +286,7 @@ class MonitorScan(TempDir):
 
 def make_session(pid, state, status_since, name=None, waiting_for=None, since=None):
     return sessions.Session(
-        pid=pid, session_id=f"s{pid}", name=name or f"site-{pid}", title=None, cwd="B:\\work\\site",
+        pid=pid, session_id=f"s{pid}", name=name or f"site-{pid}", title=None, cwd=CWD,
         kind="interactive", entrypoint="cli", version=None, state=state, waiting_for=waiting_for,
         since=since or status_since, status_since=status_since, started_at=None, model=None, context=None,
         window=200_000, window_source="default", compacted=False)
@@ -364,6 +366,30 @@ class Formatting(unittest.TestCase):
     def test_elapsed(self):
         for seconds, text in ((0, "0s"), (40, "40s"), (60, "1m"), (3700, "1h 1m"), (90_000, "1d 1h")):
             self.assertEqual(sessions.format_elapsed(seconds), text)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "reads /proc")
+class SameProcessOnLinux(unittest.TestCase):
+    """Claude Code records field 22 of /proc/<pid>/stat, the start time in clock ticks, as text."""
+
+    def setUp(self):
+        self.pid = os.getpid()
+        stat = Path(f"/proc/{self.pid}/stat").read_bytes()
+        self.start = int(stat.rpartition(b")")[2].split()[19])
+
+    def test_a_running_process_with_the_recorded_start(self):
+        self.assertIs(sessions.is_same_process(self.pid, self.start), True)
+        self.assertIs(sessions.is_same_process(self.pid, None), True)
+
+    def test_a_reused_pid_is_another_process(self):
+        self.assertIs(sessions.is_same_process(self.pid, self.start + 1), False)
+
+    def test_a_pid_that_is_gone(self):
+        self.assertIs(sessions.is_same_process(2 ** 22 + 1, 1), False)  # above the kernel's PID limit
+
+    def test_the_session_file_start_is_text(self):
+        sf = sessions.parse_session_file({"pid": self.pid, "sessionId": "abc", "procStart": str(self.start)})
+        self.assertIs(sessions.is_same_process(sf.pid, sf.proc_start), True)
 
 
 if __name__ == "__main__":

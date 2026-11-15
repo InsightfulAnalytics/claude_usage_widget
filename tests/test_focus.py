@@ -3,6 +3,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+if sys.platform != "win32":
+    raise unittest.SkipTest("focus.py drives Windows windows; focus_linux.py has its own tests")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import focus  # noqa: E402

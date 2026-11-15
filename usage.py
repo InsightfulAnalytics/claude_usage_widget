@@ -30,6 +30,9 @@ WEEKLY_KINDS = ("weekly_all", "seven_day")
 SEVERITY_ORDER = ["normal", "warning", "critical"]
 WARNING_AT = 75
 CRITICAL_AT = 90
+POLL_SECONDS = 180
+RETRY_SECONDS = 30  # after a network failure, e.g. at login or resume before the network is up
+BACKOFF_SECONDS = 600
 
 
 class UsageError(Exception):
@@ -109,6 +112,13 @@ def fetch_raw(token, timeout=15):
 
 def fetch_usage():
     return parse_usage(fetch_raw(read_token()))
+
+
+def next_poll_delay(result):
+    """Seconds until the next fetch, given what the last one returned (a Usage or a UsageError)."""
+    if isinstance(result, UsageError):
+        return {"rate_limited": BACKOFF_SECONDS, "network": RETRY_SECONDS}.get(result.kind, POLL_SECONDS)
+    return POLL_SECONDS
 
 
 def severity_for(percent, api_severity=None):
