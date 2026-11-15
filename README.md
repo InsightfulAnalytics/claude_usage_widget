@@ -4,7 +4,8 @@ A Windows tray icon and small desktop panel showing Claude plan usage (the 5-hou
 where the plan has one, the weekly limits and when each resets, the same numbers as Settings >
 Usage in the Claude app)
 and every Claude Code session running on the machine: which ones need you, which are still
-running, how full each one's context is and how many tokens it has used.
+running, how full each one's context is and how many tokens it has used. On Linux the same
+numbers and sessions sit in the [Omarchy](#omarchy) bar.
 
 ![The panel: plan usage bars on top, then six sessions with their state, context bar and token total](docs/panel.png)
 
@@ -101,19 +102,65 @@ Panel position and toggles are saved in `%LOCALAPPDATA%\claude_usage_widget\sett
 warnings go to `widget.log` beside it. `stalled_minutes` in that file (default 5) sets when a busy
 session counts as Stalled; restart the widget after changing it.
 
+## Omarchy
+
+`omarchy/` is the widget as a plugin for the [Omarchy](https://omarchy.org/) shell's bar, on
+Hyprland. It needs Python 3.10+ (standard library only), `jq`, `notify-send` and `wl-copy`.
+
+```bash
+bash omarchy/install.sh
+```
+
+That links the folder to `~/.config/omarchy/plugins/tim.claude-usage` and puts the widget in the
+bar: in the stock Agents widget's place when that is in the bar (`omarchy plugin disable
+omarchy.agents` then drops the stock one), else on the right. `bash omarchy/install.sh --remove`
+takes it out again. The shell keeps the QML it has loaded and does not watch a linked folder: after
+changing the plugin's QML run `omarchy restart shell`; after changing only the Python, running the
+install again is enough.
+
+- **Bar:** the 5-hour session % beside a spark, or the weekly % on a plan without a session limit.
+  Amber from 75%, red from 90%, dimmed when the numbers are stale. While a session needs you or is
+  stalled the spark becomes a message with an alert mark, in red. Hover for the first two limits
+  and their reset times. Left-click opens the panel; middle or right-click fetches the numbers now.
+- **Panel:** a meter per limit with its reset time, then the sessions, as in the table above. It
+  follows the Omarchy theme. Point at a session, or pick it with the keys, for its details under
+  the list.
+- **Click a session** to go to its terminal: the terminal window, or the VS Code window for a
+  session in a VS Code terminal (the window, not the tab). For a session inside tmux the panel
+  selects its pane and raises the terminal a tmux client shows it in. A tmux session with no
+  client gets its `tmux attach` command copied; a session with no window at all gets its resume
+  command copied.
+- **Right-click a session** copies its resume command; **middle-click** opens its folder.
+- **Keys:** `j` / `k` or the arrows pick a session, Enter goes to it, `c` copies its resume
+  command, `o` opens its folder, `r` fetches the numbers now, Tab moves to the next panel, Esc
+  closes.
+- **Settings:** in the widget's entry in `~/.config/omarchy/shell.json`, set with
+  `omarchy bar set tim.claude-usage <key> <value>`: `showPercent`, `notifyAttention` and
+  `notifyFinished` (`On` or `Off`), and `stalledMinutes` (add `--json`, default 5).
+
+Warnings go to `~/.local/state/claude_usage_widget/widget.log`.
+
 ## Test
 
 ```powershell
 python -m unittest discover -s tests
 ```
 
+The suite runs on Windows and Linux; each skips the other's window handling.
+
 ## Files
 
 - `usage.py`: token, fetch, parsing and formatting. No UI, covered by `tests/`.
 - `sessions.py`: live sessions, their state, transcripts, window size and notification rules. No
   UI, covered by `tests/`.
+- `view.py`: the wording both panels share, and the plain data the Omarchy panel draws.
 - `focus.py`: finds the terminal a session runs in and brings it forward (Windows only).
-- `widget.py`: tray icon (pystray), panel (tkinter), polling and session threads, settings.
+- `widget.py`: tray icon (pystray), panel (tkinter), polling and session threads, settings
+  (Windows only).
+- `focus_linux.py`: the same as `focus.py` for Hyprland, tmux included.
+- `omarchy/`: the Omarchy plugin. `claude_usage_status.py` fetches, watches the sessions, notifies
+  and prints the view; `Service.qml` runs it once for every monitor's `BarWidget.qml` and
+  `Panel.qml`.
 
 ## Licence
 
