@@ -27,11 +27,11 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 import focus
 import sessions
 import usage
+import view
+from usage import BACKOFF_SECONDS, POLL_SECONDS, RETRY_SECONDS, next_poll_delay  # noqa: F401
+from view import ERROR_SHORT, context_severity, session_tip, state_text, status_text
 
 APP = "claude_usage_widget"
-POLL_SECONDS = 180
-RETRY_SECONDS = 30  # after a network failure, e.g. at login or resume before the network is up
-BACKOFF_SECONDS = 600
 TICK_MS = 30_000  # re-render countdowns between fetches
 SESSION_SECONDS = 2
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP
@@ -52,8 +52,6 @@ FILL = {"normal": "#3987e5", "warning": "#fab219", "critical": "#d03b3b", "stale
 TRACK_MIX = 0.28
 PANEL_WIDTH = 340
 BAR_HEIGHT = 8
-ERROR_SHORT = {"login": "Login expired", "rate_limited": "Rate limited", "network": "Offline",
-               "format": "Unexpected data"}
 
 # Sessions: the dot and state text carry the state; the small bar is context fill.
 STATE_COLOURS = {sessions.NEEDS_YOU: FILL["critical"], sessions.STALLED: FILL["critical"],
@@ -62,8 +60,6 @@ STATE_DOTS = {sessions.STALLED: "○"}  # hollow; every other state is a solid �
 MAX_ROWS = 8  # more scroll with the mouse wheel
 MINI_BAR_WIDTH = 44
 MINI_BAR_HEIGHT = 6
-CONTEXT_WARNING_AT = 60  # same thresholds as claude-context-status
-CONTEXT_CRITICAL_AT = 80
 CLICK_SLOP = 4  # pixels a press may move and still count as a click, not a drag
 FLASH_SECONDS = 4
 TIP_DELAY_MS = 500
@@ -77,12 +73,6 @@ def blend(base, top, t):
     a = [int(base[i:i + 2], 16) for i in (1, 3, 5)]
     b = [int(top[i:i + 2], 16) for i in (1, 3, 5)]
     return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
-
-
-def status_text(limit):
-    if limit.percent >= 100:
-        return "Limit reached"
-    return {"warning": "Near limit", "critical": "Almost out"}.get(limit.severity)
 
 
 def load_font(size):
@@ -123,12 +113,6 @@ def bar_image(width, height, percent, severity):
     return img.resize((width, height), Image.LANCZOS)
 
 
-def context_severity(percent):
-    if percent is None:
-        return "stale"
-    return "critical" if percent >= CONTEXT_CRITICAL_AT else "warning" if percent >= CONTEXT_WARNING_AT else "normal"
-
-
 def fit_text(font, text, width):
     """`text`, cut with an ellipsis to fit `width` pixels. Tk labels never elide by themselves."""
     if not text or font.measure(text) <= width:
@@ -136,52 +120,6 @@ def fit_text(font, text, width):
     while text and font.measure(text + "…") > width:
         text = text[:-1]
     return text.rstrip() + "…" if text else ""
-
-
-def state_text(s, now):
-    text = sessions.STATE_LABELS[s.state]
-    if s.since:
-        text += " " + sessions.format_elapsed((now - s.since).total_seconds())
-    if s.waiting_for:
-        text += f" · {s.waiting_for}"
-    if s.compacted:
-        text += " · compacted"
-    if s.background:
-        text += " · bg"
-    return text
-
-
-def session_tip(s, now):
-    """Hover text for a session row."""
-    lines = [s.title or s.name, s.cwd]
-    lines.append(f"{sessions.STATE_LABELS[s.state]}" + (f": {s.waiting_for}" if s.waiting_for else "")
-                 + (f", last transcript write {sessions.format_elapsed((now - s.last_write).total_seconds())} ago"
-                    if s.last_write else ""))
-    if s.compacted:
-        lines.append("Context: compacted since the last reply")
-    elif s.context is None:
-        lines.append("Context: no reply yet")
-    else:
-        lines.append(f"Context: {s.context:,} of {s.window:,} tokens ({s.context_percent:.1f}%)")
-    lines.append(f"Window from {s.window_source}")
-    t = s.main + s.subagents
-    lines.append(f"Session total: {t.total:,} tokens")
-    lines.append(f"  input {t.input:,}, output {t.output:,}, cache read {t.cache_read:,}, cache write {t.cache_write:,}")
-    if s.subagents.total:
-        lines.append(f"  of which subagents {s.subagents.total:,}")
-    details = [s.model, s.entrypoint, f"PID {s.pid}"]
-    if s.started_at:
-        details.insert(0, f"started {s.started_at.astimezone():%a} {usage.format_clock(s.started_at)}")
-    lines.append(", ".join(d for d in details if d))
-    lines.append(s.session_id)
-    lines.append("Click: go to its terminal (or copy its resume command if it has none). Right-click: more.")
-    return "\n".join(lines)
-
-
-def next_poll_delay(result):
-    if isinstance(result, usage.UsageError):
-        return {"rate_limited": BACKOFF_SECONDS, "network": RETRY_SECONDS}.get(result.kind, POLL_SECONDS)
-    return POLL_SECONDS
 
 
 def update(widget, **options):
@@ -445,25 +383,9 @@ class App:
             text, severity = None, "stale"
         if self.error:
             severity = "stale"
-        attention = [s for s in self.sessions if s.state in sessions.ATTENTION]
-
-        lines = []
-        if attention:
-            n = len(attention)
-            lines.append(f"{n} session{'s' if n > 1 else ''} need{'' if n > 1 else 's'} you")
-        for limit in (self.data.limits[:2] if self.data else []):
-            reset = limit.resets_at
-            when = ""
-            if reset:
-                left = (reset - self.now()).total_seconds()
-                when = f", resets {reset.astimezone():%a} " if left >= 86400 else ", resets "
-                when += usage.format_clock(reset)
-            # "Session" and "Weekly" alone; a model's weekly limit keeps its name.
-            plain = limit.kind in usage.SESSION_KINDS + usage.WEEKLY_KINDS
-            lines.append(f"{limit.label.split(' (')[0] if plain else limit.label} {round(limit.percent)}%{when}")
-        if self.error:
-            lines.append(ERROR_SHORT.get(self.error.kind, "Error"))
-        title = "\n".join(lines or ["Claude usage: loading"])[:127]
+        attention = view.attention_count(self.sessions)
+        lines = view.summary_lines(self.data, self.error, self.sessions, self.now())
+        title = "\n".join(lines or [view.LOADING])[:127]
 
         # Sessions refresh every 2 s; only touch the icon when something it shows changed.
         state = (text, severity, bool(attention), title)
@@ -635,15 +557,11 @@ class App:
         return self.sessions[self.offset:self.offset + MAX_ROWS]
 
     def fill_sessions(self, now):
-        attention = sum(s.state in sessions.ATTENTION for s in self.sessions)
         if self.flash and time.monotonic() < self.flash[1]:
             update(self.sessions_note, text=self.flash[0], fg=INK_2)
-        elif attention:
-            update(self.sessions_note, text=f"{attention} need{'s' if attention == 1 else ''} you",
-                   fg=FILL["critical"])
         else:
-            n = len(self.sessions)
-            update(self.sessions_note, text=f"{n} session{'s' if n != 1 else ''}" if n else "", fg=MUTED)
+            text, urgent = view.sessions_note(self.sessions)
+            update(self.sessions_note, text=text, fg=FILL["critical"] if urgent else MUTED)
 
         for s, row in zip(self.visible_sessions(), self.session_rows):
             colour = STATE_COLOURS[s.state]

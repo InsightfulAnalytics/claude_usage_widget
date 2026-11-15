@@ -2,13 +2,17 @@ import copy
 import json
 import sys
 import tempfile
-import tkinter as tk
 import unittest
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
-from pystray._util import win32
+if sys.platform != "win32":
+    raise unittest.SkipTest("the Windows panel (tkinter, pystray, winreg)")
+
+import tkinter as tk  # noqa: E402
+
+from pystray._util import win32  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))

@@ -6,11 +6,10 @@ every field is read defensively and a session whose status can't be read still s
 from the transcripts under ~/.claude/projects. Read-only: nothing under ~/.claude is written.
 """
 
-import ctypes
-import ctypes.wintypes as wintypes
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -36,34 +35,58 @@ SYNTHETIC_MODEL = "<synthetic>"
 # one of these never matter, so they are skipped before the JSON parse.
 WANTED = (b'"usage"', b"compact_boundary", b'-title"', b'"modelId"')
 
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel32.OpenProcess.restype = wintypes.HANDLE
-_kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-_kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
-_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-
 
 def config_dir():
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 
 
-def is_same_process(pid, proc_start):
-    """True when `pid` is running and started at `proc_start` (FILETIME ticks, what Claude Code
-    records), False when it is gone or is another process that reused the PID, None when the
-    process exists but can't be inspected (elevated, say): treated as alive."""
-    handle = _kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return None if ctypes.get_last_error() == 5 else False  # ERROR_ACCESS_DENIED
-    try:
-        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
-        if not _kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
-                                         ctypes.byref(kernel), ctypes.byref(user)):
+if sys.platform == "win32":
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    def is_same_process(pid, proc_start):
+        """True when `pid` is running and started at `proc_start` (FILETIME ticks, what Claude Code
+        records), False when it is gone or is another process that reused the PID, None when the
+        process exists but can't be inspected (elevated, say): treated as alive."""
+        handle = _kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None if ctypes.get_last_error() == 5 else False  # ERROR_ACCESS_DENIED
+        try:
+            created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+            if not _kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                             ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            if exited.dwHighDateTime or exited.dwLowDateTime:
+                return False  # exited, but someone still holds a handle to it
+            return proc_start is None or (created.dwHighDateTime << 32 | created.dwLowDateTime) == proc_start
+        finally:
+            _kernel32.CloseHandle(handle)
+else:
+    def is_same_process(pid, proc_start):
+        """True when `pid` is running and started at `proc_start` (clock ticks since boot, field 22
+        of /proc/<pid>/stat, what Claude Code records on Linux), False when it is gone or is
+        another process that reused the PID, None when it exists but can't be read: treated as
+        alive."""
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_bytes()
+        except (FileNotFoundError, ProcessLookupError):
+            return False
+        except OSError:
             return None
-        if exited.dwHighDateTime or exited.dwLowDateTime:
-            return False  # exited, but someone still holds a handle to it
-        return proc_start is None or (created.dwHighDateTime << 32 | created.dwLowDateTime) == proc_start
-    finally:
-        _kernel32.CloseHandle(handle)
+        # The name (field 2) is in brackets and may hold spaces and brackets: "(tmux: server)".
+        fields = stat.rpartition(b")")[2].split()
+        try:
+            if fields[0] == b"Z":
+                return False  # exited, not yet reaped
+            return proc_start is None or int(fields[19]) == proc_start
+        except (IndexError, ValueError):
+            return None
 
 
 def ms_time(value):

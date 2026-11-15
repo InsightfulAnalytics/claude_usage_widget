@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "id": "tim.claude-usage",
+  "name": "Claude usage",
+  "version": "1.0.0",
+  "author": "Tim",
+  "license": "MIT",
+  "description": "Claude plan usage and every Claude Code session running on this machine: the session or weekly % in the bar, the limits and the sessions in a panel, and notifications when a session needs you.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Claude usage",
+    "description": "The session or weekly limit used, with the plan's limits and the running Claude Code sessions in the panel.",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "schema": [
+      {
+        "key": "showPercent",
+        "type": "enum",
+        "label": "Show the % in the bar",
+        "options": [
+          "On",
+          "Off"
+        ],
+        "defaultValue": "On",
+        "description": "The 5-hour session limit used, or the weekly one on a plan without a session limit. Off leaves the icon alone."
+      },
+      {
+        "key": "notifyAttention",
+        "type": "enum",
+        "label": "Notify when a session needs you",
+        "options": [
+          "On",
+          "Off"
+        ],
+        "defaultValue": "On",
+        "description": "A notification when a session blocks on a permission prompt or a question, or stalls."
+      },
+      {
+        "key": "notifyFinished",
+        "type": "enum",
+        "label": "Notify when a long turn finishes",
+        "options": [
+          "On",
+          "Off"
+        ],
+        "defaultValue": "On",
+        "description": "A notification when a turn of 2 minutes or more ends."
+      },
+      {
+        "key": "stalledMinutes",
+        "type": "integer",
+        "label": "Stalled after (minutes)",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "A busy session counts as Stalled once nothing has been written to its transcript for this long."
+      }
+    ]
+  }
+}
